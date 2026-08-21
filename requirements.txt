@@ -1,0 +1,11 @@
+openai
+python-dotenv
+chromadb
+langchain
+langgraph
+langchain-openai
+fastapi
+uvicorn
+pymupdf
+python-docx
+httpx
