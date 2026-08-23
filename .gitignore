@@ -13,4 +13,4 @@ chroma_db/
 
 
 uploads/
-.pytest_cache/
+.pytest_cache/checkpoints.sqlite

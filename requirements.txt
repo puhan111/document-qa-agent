@@ -9,4 +9,4 @@ uvicorn
 pymupdf
 python-docx
 httpx
-python-multipart
+python-multipartlanggraph-checkpoint-sqlite

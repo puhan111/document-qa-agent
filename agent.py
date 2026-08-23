@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from contextlib import ExitStack
 
 import chromadb
 from langchain_openai import ChatOpenAI
@@ -7,7 +8,7 @@ from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from ingest import embed_text
 
@@ -65,7 +66,9 @@ graph_builder.add_edge(START, "chatbot")
 graph_builder.add_conditional_edges("chatbot", tools_condition)
 graph_builder.add_edge("tools", "chatbot")
 
-memory = InMemorySaver()
+# 用 ExitStack 让 SQLite 连接在整个服务期间一直保持打开
+_checkpoint_stack = ExitStack()
+memory = _checkpoint_stack.enter_context(SqliteSaver.from_conn_string("checkpoints.sqlite"))
 graph = graph_builder.compile(checkpointer=memory)
 
 
