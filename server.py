@@ -1,7 +1,9 @@
 import shutil
+import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent import ask
@@ -27,6 +29,18 @@ def health():
 def chat(req: ChatRequest):
     answer = ask(req.question, req.thread_id)
     return {"answer": answer}
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    answer = ask(req.question, req.thread_id)
+
+    async def gen():
+        for ch in answer:
+            yield f"data: {ch}\n\n"
+            await asyncio.sleep(0.02)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.post("/upload")
