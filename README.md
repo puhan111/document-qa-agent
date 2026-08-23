@@ -43,7 +43,7 @@ flowchart TB
         F --> G[agent.py LangGraph]
         G --> H[search_docs 检索]
         H --> D
-        G --> I[带 [1] 引用的回答]
+        G --> I[带引用的回答]
     end
 ```
 
