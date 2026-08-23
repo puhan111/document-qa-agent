@@ -11,8 +11,11 @@
 - 文档上传：支持 PDF、Word
 - 文档解析：PyMuPDF（PDF）+ python-docx（Word）
 - 知识库构建：分块 + 向量化 + Chroma 入库
-- 智能问答：LangGraph Agent + RAG 检索，带引用溯源
+- 智能问答：LangGraph Agent + 混合检索，带引用溯源
+- 混合检索：向量检索 + BM25 关键词检索，RRF 融合重排
 - 多轮对话：checkpointer + thread_id 记忆上下文
+- 对话持久化：SQLite checkpointer，服务重启不丢记忆
+- 流式输出：SSE 打字机效果（/chat/stream）
 - 防幻觉：Prompt 约束 + 低 temperature + 引用溯源
 - 服务化：FastAPI 提供 REST 接口 + 自动 Swagger 文档
 - 容器化：Docker 一键部署
@@ -25,6 +28,7 @@
 | Agent 编排 | LangGraph |
 | 文档解析 | PyMuPDF、python-docx |
 | 向量库 | Chroma |
+| 关键词检索 | BM25（rank_bm25）+ jieba 分词 |
 | Embedding | 通义 text-embedding |
 | 大模型 | DeepSeek |
 | 部署 | Docker |
@@ -41,7 +45,7 @@ flowchart TB
     subgraph 问答["智能问答"]
         E[用户提问] --> F[server.py /chat]
         F --> G[agent.py LangGraph]
-        G --> H[search_docs 检索]
+        G --> H[search_docs 混合检索]
         H --> D
         G --> I[带引用的回答]
     end
@@ -53,9 +57,11 @@ flowchart TB
 docqa/
 ├── parse.py             # 文档解析：PDF/Word → 纯文本
 ├── ingest.py            # 知识库构建：分块 + 向量化 + Chroma 入库
-├── agent.py             # LangGraph 问答 Agent（RAG 检索 + 引用 + 防幻觉 + 多轮记忆）
-├── server.py            # FastAPI 服务（/health /chat /upload）
+├── agent.py             # LangGraph 问答 Agent（混合检索 + 引用 + 防幻觉 + 持久化记忆）
+├── server.py            # FastAPI 服务（/health /chat /chat/stream /upload）
 ├── make_test_files.py   # 生成测试文档
+├── test_basic.py        # 单元测试（parse / chunk）
+├── eval_retrieval.py    # 检索命中率评测
 ├── requirements.txt     # 依赖
 ├── Dockerfile           # 容器化
 ├── .dockerignore
@@ -105,6 +111,11 @@ curl -X POST http://localhost:8000/upload -F "file=@test.pdf"
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{"question":"退货政策是什么"}'
+
+# 流式提问
+curl -N -X POST http://localhost:8000/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"question":"退货政策是什么"}'
 ```
 
 ## 接口说明
@@ -114,12 +125,13 @@ curl -X POST http://localhost:8000/chat \
 | GET | /health | 健康检查 |
 | POST | /upload | 上传 PDF/Word，解析并入库 |
 | POST | /chat | 问答，请求体 {question, thread_id} |
+| POST | /chat/stream | 流式问答（SSE），请求体 {question, thread_id} |
 
 ## 核心数据流
 
 **入库**：上传文件 → `parse_file` 按后缀分流（docx→python-docx，pdf→PyMuPDF）→ `chunk_text` 分块 → `embed_text` 向量化 → 存入 Chroma（原文 + 向量 + 来源）。
 
-**问答**：`POST /chat` → LangGraph Agent → 模型判断要不要检索 → `search_docs`（问题向量化 → Chroma 查 top3）→ 模型基于资料生成带 `[1]` 引用的回答。
+**问答**：`POST /chat` → LangGraph Agent → 模型判断要不要检索 → `search_docs` 混合检索（向量检索 + BM25 关键词检索，RRF 融合重排取 top3）→ 模型基于资料生成带 `[1]` 引用的回答。
 
 ## 技术选型理由
 
@@ -127,6 +139,7 @@ curl -X POST http://localhost:8000/chat \
 |---|---|
 | LangGraph | 用图 + 状态清晰表达 Agent 循环，自带 checkpointer 做多轮记忆 |
 | Chroma | 轻量、本地可跑，适合中小项目；生产可换 Milvus / Elasticsearch |
+| 混合检索 | 向量擅长语义、BM25 擅长精确词，两者互补，RRF 融合重排 |
 | FastAPI | 自动校验 + 自动 Swagger 文档，适合把 Agent 包成服务 |
 | DeepSeek | 云 API 免部署、成本低 |
 | Docker | 一次打包、到处运行，部署一致 |
@@ -140,6 +153,6 @@ docker run -d --name docqa -p 8000:8000 --env-file .env docqa
 
 ## 已知局限（后续计划）
 
-- 检索目前是单一向量 top3，未加混合检索与重排序
-- 记忆用 InMemorySaver（内存版），重启丢失，生产需换持久化
+- 重排目前用 RRF 轻量融合，尚未接神经 reranker（如 BGE-reranker）
+- 对话持久化用 SQLite（单机文件），生产高并发可换 Postgres / Redis
 - 未做用户认证与多用户文档隔离
