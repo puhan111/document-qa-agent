@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 from contextlib import ExitStack
 
 import chromadb
+import jieba
+from rank_bm25 import BM25Okapi
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -15,21 +17,45 @@ from ingest import embed_text
 load_dotenv()
 
 
-# 1. 检索工具：模型需要查资料时调用它
+# 1. 检索工具：混合检索（向量 + BM25 关键词）+ RRF 融合重排
 @tool
 def search_docs(query: str) -> str:
     """在知识库里检索相关文档片段。参数 query 是用户的问题或要查的关键信息。"""
     client = chromadb.PersistentClient(path="./chroma_db")
     collection = client.get_collection(name="docs")
 
-    q_vec = embed_text(query)
-    result = collection.query(query_embeddings=[q_vec], n_results=3)
+    all_data = collection.get()
+    id_to_doc = {
+        did: (doc, meta)
+        for did, doc, meta in zip(
+            all_data["ids"], all_data["documents"], all_data["metadatas"]
+        )
+    }
 
-    docs = result["documents"][0]
-    metas = result["metadatas"][0]
+    # 1) 向量检索：语义匹配，取 top10
+    q_vec = embed_text(query)
+    vec_result = collection.query(query_embeddings=[q_vec], n_results=10)
+    vec_ids = vec_result["ids"][0]
+
+    # 2) 关键词检索：BM25，取 top10
+    corpus = [list(jieba.cut(d)) for d in all_data["documents"]]
+    bm25 = BM25Okapi(corpus)
+    scores = bm25.get_scores(list(jieba.cut(query)))
+    order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:10]
+    bm25_ids = [all_data["ids"][i] for i in order]
+
+    # 3) RRF 融合重排
+    rrf = {}
+    for rank, did in enumerate(vec_ids):
+        rrf[did] = rrf.get(did, 0) + 1.0 / (60 + rank + 1)
+    for rank, did in enumerate(bm25_ids):
+        rrf[did] = rrf.get(did, 0) + 1.0 / (60 + rank + 1)
+
+    top3 = sorted(rrf, key=rrf.get, reverse=True)[:3]
 
     parts = []
-    for i, (doc, meta) in enumerate(zip(docs, metas), 1):
+    for i, did in enumerate(top3, 1):
+        doc, meta = id_to_doc[did]
         source = meta.get("source", "unknown")
         parts.append(f"[{i}]（来源：{source}）\n{doc}")
     return "\n\n".join(parts)
