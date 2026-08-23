@@ -10,4 +10,7 @@ __pycache__/
 
 # 向量库数据（本地生成，可重新构建）
 chroma_db/
+
+
 uploads/
+.pytest_cache/
