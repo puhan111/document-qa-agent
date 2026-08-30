@@ -13,6 +13,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from ingest import embed_text
+from context import compress_history   # 新增
 
 load_dotenv()
 
@@ -23,7 +24,6 @@ def search_docs(query: str) -> str:
     """在知识库里检索相关文档片段。参数 query 是用户的问题或要查的关键信息。"""
     client = chromadb.PersistentClient(path="./chroma_db")
     collection = client.get_collection(name="docs")
-
     all_data = collection.get()
     id_to_doc = {
         did: (doc, meta)
@@ -31,26 +31,22 @@ def search_docs(query: str) -> str:
             all_data["ids"], all_data["documents"], all_data["metadatas"]
         )
     }
-
     # 1) 向量检索：语义匹配，取 top10
     q_vec = embed_text(query)
     vec_result = collection.query(query_embeddings=[q_vec], n_results=10)
     vec_ids = vec_result["ids"][0]
-
     # 2) 关键词检索：BM25，取 top10
     corpus = [list(jieba.cut(d)) for d in all_data["documents"]]
     bm25 = BM25Okapi(corpus)
     scores = bm25.get_scores(list(jieba.cut(query)))
     order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:10]
     bm25_ids = [all_data["ids"][i] for i in order]
-
     # 3) RRF 融合重排
     rrf = {}
     for rank, did in enumerate(vec_ids):
         rrf[did] = rrf.get(did, 0) + 1.0 / (60 + rank + 1)
     for rank, did in enumerate(bm25_ids):
         rrf[did] = rrf.get(did, 0) + 1.0 / (60 + rank + 1)
-
     top3 = sorted(rrf, key=rrf.get, reverse=True)[:3]
 
     parts = []
@@ -69,6 +65,7 @@ llm = ChatOpenAI(
     temperature=0.1,
 )
 
+
 # 3. 系统提示词：只按资料答 + 带出处 + 不知道就说不知道
 SYSTEM_PROMPT = (
     "你是一个企业知识库问答助手。请只根据检索到的资料回答用户问题。"
@@ -76,13 +73,21 @@ SYSTEM_PROMPT = (
     "回答时请引用资料编号（例如 [1]）说明依据。"
 )
 
+
 llm_with_tools = llm.bind_tools([search_docs])
 
 
-# 4. 图节点：调用模型（带上系统提示词 + 历史消息）
+# 4. 图节点：调用模型（带上系统提示词 + 历史消息；超阈值先压缩）
 def chatbot(state: MessagesState):
-    messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
-    return {"messages": [llm_with_tools.invoke(messages)]}
+    msgs = state["messages"]
+    update, model_prefix = compress_history(msgs, llm)
+    if update is not None:
+        # 触发压缩：删掉被摘要的旧消息 + 追加摘要消息，持久层也跟着瘦身
+        response = llm_with_tools.invoke([SystemMessage(content=SYSTEM_PROMPT)] + model_prefix)
+        return {"messages": update + [response]}
+    else:
+        messages = [SystemMessage(content=SYSTEM_PROMPT)] + msgs
+        return {"messages": [llm_with_tools.invoke(messages)]}
 
 
 graph_builder = StateGraph(MessagesState)
