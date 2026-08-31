@@ -16,4 +16,14 @@ page.insert_text((72, 100), "它包含两行文字，用来验证 PDF 解析。"
 pdf.save("test.pdf")
 pdf.close()
 
-print("测试文件已生成：test.docx 和 test.pdf")
+# 造一个 200 页大 PDF，用于验收大文件流式入库
+big = fitz.open()
+for i in range(200):
+    p = big.new_page()
+    p.insert_text((72, 72), f"大文件测试 第 {i+1} 页：", fontname="china-s")
+    p.insert_text((72, 100), f"这是第 {i+1} 页的内容，用于验证流式解析与分批入库。", fontname="china-s")
+    p.insert_text((72, 128), "每页都有几行中文文字，确保分块后能正确向量化。", fontname="china-s")
+big.save("big.pdf")
+big.close()
+
+print("测试文件已生成：test.docx 和 test.pdf 和 big.pdf")
